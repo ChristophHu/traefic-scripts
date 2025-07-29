@@ -1,5 +1,17 @@
 # Grafana
 
+## System
+
+## Prepare
+1. install ssh,
+2. install docker and docker-compose
+
+### SSH
+
+
+### Docker
+
+
 ## Script
 ```bash
 #!/bin/bash
