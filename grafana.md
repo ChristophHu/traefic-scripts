@@ -234,46 +234,15 @@ docker exec -it crowdsec cscli bouncers add traefik-bouncer
 # r1EqHZlsPXTVwk4BTUmB9lIAmwVRsMKbnQEnxRqmLcQ
 ```
 Trage den erzeugten Key in .env oder direkt im docker-compose.yml unter CROWDSEC_BOUNCER_API_KEY ein
-
-Alternativ:
 ```bash
-#!/usr/bin/env bash
+docker compose up -d crowdsec-bouncer
+```
 
-set -e
-
-ENV_FILE=".env"
-BOUNCER_NAME="traefik-bouncer"
-CONTAINER_NAME="crowdsec"
-
-# Prüfen, ob CrowdSec-Container läuft
-if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-  echo "❌ Container '${CONTAINER_NAME}' läuft nicht. Bitte mit docker-compose up -d starten."
-  exit 1
-fi
-
-# API-Key generieren
-echo "🔐 Erzeuge neuen Bouncer-Key für '${BOUNCER_NAME}'..."
-BOUNCER_KEY=$(docker exec -it "$CONTAINER_NAME" cscli bouncers add "$BOUNCER_NAME" -o raw | tr -d '\r')
-
-if [ -z "$BOUNCER_KEY" ]; then
-  echo "❌ API-Key konnte nicht erzeugt werden."
-  exit 1
-fi
-
-# In .env einfügen oder ersetzen
-if grep -q "^CROWDSEC_BOUNCER_KEY=" "$ENV_FILE"; then
-  sed -i "s|^CROWDSEC_BOUNCER_KEY=.*|CROWDSEC_BOUNCER_KEY=$BOUNCER_KEY|" "$ENV_FILE"
-else
-  echo "CROWDSEC_BOUNCER_KEY=$BOUNCER_KEY" >> "$ENV_FILE"
-fi
-
-echo "✅ API-Key in .env aktualisiert."
-
-# Bouncer-Container neu starten
-echo "🔄 Starte 'crowdsec-bouncer' neu..."
-docker-compose up -d crowdsec-bouncer
-
-echo "🎉 Fertig! Der Bouncer ist jetzt aktiv."
+### Test
+```bash
+dig grafana.meinedomain.de @127.0.0.1
+dig influx.meinedomain.de @127.0.0.1
+dig nodered.meinedomain.de @127.0.0.1
 ```
 
 ## Script ohne Traefik und CrowdSec
@@ -287,7 +256,7 @@ INFLUXDB_ADMIN_USER="admin"
 INFLUXDB_ADMIN_PASSWORD="adminpass"
 
 mkdir -p grafana-stack/mosquitto grafana-stack/nodered grafana-stack/influxdb grafana-stack/grafana
-sudo chown -R 1000:1000 grafana-stack/nodered
+chown -R 1000:1000 grafana-stack/nodered
 
 cd grafana-stack
 
@@ -356,6 +325,27 @@ echo
 echo "🚀 Starte jetzt mit:"
 echo "   cd grafana-stack"
 echo "   docker-compose up -d"
+```
+
+### Shelly MQTT Setup
+```json
+{
+  "settings": {
+    "mqtt": {
+      "enabled": true,
+      "connectionType": "No SSL",
+      "MQTT Prefix": "shelly 1pm",
+      "Enable MQTT Control": false,
+      "Enable RPC over MQTT": true,
+      "RPC status notifications over MQTT": true,
+      "Generic status update over MQTT": true,
+      "server": "192.168.1.150:1883",
+      "clientId": "shelly 1pm",
+      "username": "",
+      "password": ""
+    }
+  }
+}
 ```
 
 Node-RED öffnen (http://localhost:1880)
