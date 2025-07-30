@@ -12,27 +12,271 @@
 ### Docker
 
 ## Structure
-| Dienst | Beschreibung | Erreichbar unter |
-| --- | --- | --- |
-| Mosquitto | MQTT Broker (intern) | mqtt://localhost:1883 |
-| InfluxDB | Zeitreihen-Datenbank | https://influx.yourdomain |
-| Grafana | Dashboard-Visualisierung | https://grafana.yourdomain |
-| Node-RED | Flow-basierte Automatisierung | https://nodered.yourdomain |
-| Traefik | Reverse Proxy mit SSL & Routing | HTTP/HTTPS |
-| CrowdSec | Schutz vor Brute-Force & Bot-Angriffen | über Traefik integriert |
+| Dienst | Beschreibung | Port | Erreichbar unter |
+| --- | --- | --- | --- |
+| Mosquitto | MQTT Broker (intern) | 1883 | mqtt://localhost:1883 |
+| InfluxDB | Zeitreihen-Datenbank | 8086 | https://influx.yourdomain |
+| Grafana | Dashboard-Visualisierung | 3000 | https://grafana.yourdomain |
+| Node-RED | Flow-basierte Automatisierung | 1880 | https://nodered.yourdomain |
+| Traefik | Reverse Proxy mit SSL & Routing | | HTTP/HTTPS |
+| CrowdSec | Schutz vor Brute-Force & Bot-Angriffen | | über Traefik integriert |
 
 ```plaintext
 grafana-stack/
-├── docker-compose.yml
-├── traefik/
-│   ├── traefik.yml
-│   └── dynamic/
-│       └── conf.yml
 ├── crowdsec/
 │   └── config.yaml (wird automatisch erzeugt)
+├── docker-compose.yml
+├── .env
+├── grafana/
+├── influxdb/
+├── mosquitto/
+│   └── mosquitto.conf
+├── nodered/
+├── setup.sh
+└── traefik/
+    ├── traefik.yml
+    └── dynamic/
+        └── conf.yml
 ```
 
-## Script
+## Script mit Traefik und CrowdSec
+```bash
+mkdir -p /etc/docker/grafana-stack
+nano /etc/docker/grafana-stack/.env
+```
+
+```env
+# General
+DOMAIN=yourdomain.com
+EMAIL=you@example.com
+
+# InfluxDB
+INFLUXDB_DB=shelly
+INFLUXDB_ADMIN_USER=admin
+INFLUXDB_ADMIN_PASSWORD=adminpass
+
+# CrowdSec
+CROWDSEC_BOUNCER_KEY=REPLACE_THIS_LATER
+```
+
+`grafana-setup.sh` unter `/etc/docker/grafana-stack/` erstellen:
+```bash
+#!/usr/bin/env bash
+
+set -e
+
+cd /etc/docker/grafana-stack
+
+# .env laden
+if [ -f .env ]; then
+  export $(grep -v '^#' .env | xargs)
+else
+  echo "❌ .env Datei fehlt!"
+  exit 1
+fi
+
+# Verzeichnisse
+mkdir -p {mosquitto,nodered,influxdb,grafana,traefik/dynamic,crowdsec}
+chown -R 1000:1000 nodered
+
+# Mosquitto config
+cat > mosquitto/mosquitto.conf <<EOF
+listener 1883
+allow_anonymous true
+EOF
+
+# Traefik static config
+cat > traefik/traefik.yml <<EOF
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: $EMAIL
+      storage: /letsencrypt/acme.json
+      httpChallenge:
+        entryPoint: web
+
+providers:
+  docker:
+    exposedByDefault: false
+  file:
+    directory: /dynamic
+    watch: true
+EOF
+
+mkdir -p traefik/letsencrypt
+touch traefik/letsencrypt/acme.json
+chmod 600 traefik/letsencrypt/acme.json
+
+# Dynamic config (CrowdSec Middleware)
+cat > traefik/dynamic/conf.yml <<EOF
+http:
+  middlewares:
+    crowdsec-bouncer:
+      forwardAuth:
+        address: http://crowdsec-bouncer:8080/api/v1/forward-auth
+        trustForwardHeader: true
+        authResponseHeaders:
+          - X-Auth-User
+EOF
+
+echo "✅ Setup-Dateien erstellt."
+echo "📦 Erstelle docker-compose.yml"
+
+cat > docker-compose.yml <<EOF
+services:
+
+  traefik:
+    image: traefik:v3.0
+    command:
+      - --configFile=/traefik.yml
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./traefik/traefik.yml:/traefik.yml:ro
+      - ./traefik/dynamic:/dynamic:ro
+      - ./traefik/letsencrypt:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: always
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    ports:
+      - "1883:1883"
+    restart: always
+
+  influxdb:
+    image: influxdb:1.8
+    environment:
+      - INFLUXDB_DB=${INFLUXDB_DB}
+      - INFLUXDB_ADMIN_USER=${INFLUXDB_ADMIN_USER}
+      - INFLUXDB_ADMIN_PASSWORD=${INFLUXDB_ADMIN_PASSWORD}
+      - INFLUXDB_HTTP_AUTH_ENABLED=true
+    volumes:
+      - influxdb_data:/var/lib/influxdb
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.influx.rule=Host('influx.${DOMAIN}')"
+      - "traefik.http.routers.influx.entrypoints=websecure"
+      - "traefik.http.routers.influx.tls.certresolver=letsencrypt"
+      - "traefik.http.services.influx.loadbalancer.server.port=8086"
+    restart: always
+
+  nodered:
+    image: nodered/node-red:latest
+    volumes:
+      - ./nodered:/data
+    depends_on:
+      - mosquitto
+      - influxdb
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nodered.rule=Host('nodered.${DOMAIN}')"
+      - "traefik.http.routers.nodered.entrypoints=websecure"
+      - "traefik.http.routers.nodered.tls.certresolver=letsencrypt"
+      - "traefik.http.services.nodered.loadbalancer.server.port=1880"
+    restart: always
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    volumes:
+      - grafana_data:/var/lib/grafana
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host('grafana.${DOMAIN}')"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.routers.grafana.tls.certresolver=letsencrypt"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+    restart: always
+
+  crowdsec:
+    image: crowdsecurity/crowdsec
+    container_name: crowdsec
+    volumes:
+      - ./crowdsec:/etc/crowdsec
+      - /var/log:/var/log:ro
+    restart: unless-stopped
+
+  crowdsec-bouncer:
+    image: fbonalair/traefik-crowdsec-bouncer
+    environment:
+      CROWDSEC_BOUNCER_API_KEY: ${CROWDSEC_BOUNCER_KEY}
+      CROWDSEC_AGENT_HOST: crowdsec:8080
+    restart: unless-stopped
+
+volumes:
+  influxdb_data:
+  grafana_data:
+EOF
+echo "cd /etc/docker/grafana-stack/"
+echo "✅ docker-compose.yml erstellt."
+```
+
+```bash
+bash /etc/docker/grafana-stack/grafana-setup.sh
+```
+
+### CrowdSec Bouncer
+🔐 CrowdSec API Key
+Starte das Setup mit `docker compose up -d` im Ordner `/etc/docker/grafana-stack`.
+
+Erzeuge den Bouncer-API-Key:
+```bash
+docker exec -it crowdsec cscli bouncers add traefik-bouncer
+# r1EqHZlsPXTVwk4BTUmB9lIAmwVRsMKbnQEnxRqmLcQ
+```
+Trage den erzeugten Key in .env oder direkt im docker-compose.yml unter CROWDSEC_BOUNCER_API_KEY ein
+
+Alternativ:
+```bash
+#!/usr/bin/env bash
+
+set -e
+
+ENV_FILE=".env"
+BOUNCER_NAME="traefik-bouncer"
+CONTAINER_NAME="crowdsec"
+
+# Prüfen, ob CrowdSec-Container läuft
+if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+  echo "❌ Container '${CONTAINER_NAME}' läuft nicht. Bitte mit docker-compose up -d starten."
+  exit 1
+fi
+
+# API-Key generieren
+echo "🔐 Erzeuge neuen Bouncer-Key für '${BOUNCER_NAME}'..."
+BOUNCER_KEY=$(docker exec -it "$CONTAINER_NAME" cscli bouncers add "$BOUNCER_NAME" -o raw | tr -d '\r')
+
+if [ -z "$BOUNCER_KEY" ]; then
+  echo "❌ API-Key konnte nicht erzeugt werden."
+  exit 1
+fi
+
+# In .env einfügen oder ersetzen
+if grep -q "^CROWDSEC_BOUNCER_KEY=" "$ENV_FILE"; then
+  sed -i "s|^CROWDSEC_BOUNCER_KEY=.*|CROWDSEC_BOUNCER_KEY=$BOUNCER_KEY|" "$ENV_FILE"
+else
+  echo "CROWDSEC_BOUNCER_KEY=$BOUNCER_KEY" >> "$ENV_FILE"
+fi
+
+echo "✅ API-Key in .env aktualisiert."
+
+# Bouncer-Container neu starten
+echo "🔄 Starte 'crowdsec-bouncer' neu..."
+docker-compose up -d crowdsec-bouncer
+
+echo "🎉 Fertig! Der Bouncer ist jetzt aktiv."
+```
+
+## Script ohne Traefik und CrowdSec
 ```bash
 #!/bin/bash
 
