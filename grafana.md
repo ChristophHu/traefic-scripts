@@ -280,6 +280,7 @@ services:
 
   influxdb:
     image: influxdb:1.8
+    name: influxdb
     environment:
       - INFLUXDB_DB=$INFLUXDB_DB
       - INFLUXDB_ADMIN_USER=$INFLUXDB_ADMIN_USER
@@ -347,6 +348,79 @@ echo "   docker-compose up -d"
   }
 }
 ```
+
+### Node-Red Setup
+In Node-RED kannst du die MQTT-Integration für Shelly-Geräte einrichten und die Daten in InfluxDB speichern. Hier ein Beispiel-Flow:
+
+```json
+[
+  {
+    "id": "mqtt_in",
+    "type": "mqtt in",
+    "z": "flow_id",
+    "name": "",
+    "topic": "shellies/#",
+    "qos": "2",
+    "datatype": "auto",
+    "broker": "mqtt_broker_id",
+    "x": 100,
+    "y": 100,
+    "wires": [["function"]]
+  },
+  {
+    "id": "function",
+    "name": "format apower",
+    "func": "msg.payload = msg.payload.apower; \n return msg;",
+    "x": 200,
+    "y": 100,
+    "wires": [["debug"]]
+  },
+  {
+    "id": "debug",
+    "type": "debug",
+    "z": "flow_id",
+    "name": "",
+    "active": true,
+    "tosidebar": true,
+    "tosequence": false,
+    "console": false,
+    "tostatus": false,
+    "complete": "true",
+    "targetType": "full",
+    "x": 300,
+    "y": 100,
+    "wires": []
+  }
+    {
+    "id": "influxdb_out",
+    "type": "influxdb out",
+    "name": "influxdb",
+    "server": {
+      "name": "shellydb",
+      "database": "shelly",
+      "username": "admin",
+      "password": "adminpass"
+    },
+    "measurement": "shelly_data"
+  }
+]
+```
+
+### InfluxDB Setup
+```bash
+# InfluxDB CLI
+docker exec -it influxdb influx -username admin -password adminpass
+
+# Datenbank erstellen
+CREATE DATABASE shelly;
+SHOW DATABASES;
+
+# Löschen der Messung, falls nötig
+USE shelly;
+SHOW MEASUREMENTS;
+DROP MEASUREMENT shelly_data;
+```
+
 
 Node-RED öffnen (http://localhost:1880)
 Palette öffnen → Plugin installieren: node-red-contrib-influxdb
